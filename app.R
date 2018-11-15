@@ -7,21 +7,23 @@
 #    http://shiny.rstudio.com/
 #
 
-library(shiny)
 library(bnwidget)
+library(gRain)
+library(shiny)
 library(bnlearn)
+library(shinydashboard)
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
    
    # Application title
-   titlePanel("Bayesian network visual"),
-   
+   titlePanel("Bayesian network visualization"),
+   verbatimTextOutput("selectedNode"),
    # Sidebar with a slider input for number of bins 
    sidebarLayout(
      shiny::selectInput(
        inputId = "net",
-       h5("Bayesian Network:"),
+       h5("Choose dataset:"),
        c("Sample Discrete Network" = 1,
          "Asia" = 2,
          "Alarm Network" = 3,
@@ -29,24 +31,34 @@ ui <- fluidPage(
          "Hailfinder Network" = 5
        )
      ),
-      
+     
       # Show the Bayesian network
       mainPanel(
         shinydashboard::box(
           title = "Bayesian Network",
           status = "success",
-          collapsible = TRUE,
-          width = NULL,
-          
+          width = 1000,
+          height = 800,
           # d3 force directed network
           bnwidget::bnwidgetOutput("bnPlot")
-        )
+        ),
+        width = 12
       )
    )
 )
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
+  
+  rv <- reactiveValues()
+  
+  output$selectedNode <- shiny::renderPrint({
+    input$selectedNode
+  })
+  #output$evidence <- shiny::renderPrint({
+  #  input$newEvidence
+  #})
+  
   dat <- shiny::reactive({
      if (input$net == 1) {
         dat <- learning.test
@@ -75,21 +87,47 @@ server <- function(input, output) {
       dag <- bnlearn::cextend(bnlearn::hc(dat()), strict = FALSE)
     })
   
+  observeEvent(input$newEvidence, {
+     if(is.null(input$newEvidence))
+     {
+       rv$jtree <- compile(as.grain(bn()))
+      }else
+      {
+        newEvidence <- strsplit(input$newEvidence, "$", fixed=TRUE)[[1]]
+        rv$jtree <- setFinding(rv$jtree, nodes = newEvidence[1], states = newEvidence[2])
+      }
+   },ignoreNULL = FALSE)
+   
+   
+   bn <- shiny::reactive({
+     bn <- bnlearn::bn.fit(dag(), dat())
+   })
+  
    output$bnPlot <- bnwidget::renderBnwidget({
-     if (is.null(dag()) || is.null(dat()))
+     if (is.null(dag()) || is.null(dat()) || is.null(bn()) || is.null(rv$jtree))
        return(NULL)
-     
-     bnfit<-bnlearn::bn.fit(dag(), dat())
-     probs <- lapply(bnfit, function(x) x$prob)
-     cpds<- lapply(bnfit, function(x) x$prob)
-     node_values <- lapply(bnfit, function(x) rownames(x$prob))
+
+     probs <- lapply(bn(), function(x) x$prob)
+     cpds<- lapply(bn(), function(x) x$prob)
+     node_values <- lapply(bn(), function(x) rownames(x$prob))
      nodes <- bnlearn::nodes(dag())
      links <- bnlearn::arcs(dag())
+     marginal_probs = querygrain(rv$jtree)
+     evidence <-getEvidence(rv$jtree)
+     evidence_probs<-lapply(seq_along(evidence$nodes), 
+                            function(i){ 
+                              node <- evidence$nodes[i]
+                              probs <- rep(0, length(node_values[[node]])); 
+                              probs[match(evidence$hard.state[i], node_values[[node]])] <- 1; 
+                              probs})
+     evidence_probs <- setNames(evidence_probs, evidence$nodes)
+     marginal_probs <- append(evidence_probs, marginal_probs)
      
      bnwidget::bnwidget(
        nodes,
        links,
-       cpds
+       cpds,
+       marginal_probs = marginal_probs
      )
    })
 }
